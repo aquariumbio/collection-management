@@ -6,8 +6,8 @@
 needs 'Standard Libs/Units'
 needs 'Standard Libs/Debug'
 needs 'Standard Libs/AssociationManagement'
-needs 'Collection_Management/CollectionLocation'
-needs 'Collection_Management/CollectionData'
+needs 'Collection Management/CollectionLocation'
+needs 'Collection Management/CollectionData'
 
 module CollectionTransfer
   include Units
@@ -52,8 +52,6 @@ module CollectionTransfer
   def get_num_plates(operations, role)
     get_array_of_collections(operations, role).length
   end
-
-
 
   # Transfers samples from fv_array to collection.  If the collection cannot
   # hold all the samples it will create more collections to hold all samples.
@@ -149,8 +147,6 @@ module CollectionTransfer
     collections
   end
 
-
-
   # TODO Break this apart
   # Assists with transfer of items into a collection
   # Optional Instructions to tech
@@ -210,10 +206,11 @@ module CollectionTransfer
     collections
   end
 
+  #-------------
+
   # Assist with the transfer from a collection to an item.
   # An association map must first be created
   #
-
   # @param from_collection [Collection] the collection that is being transferred
   # @param association_map [Array<{to_loc: item, from_loc: [row, col]}, ...>]
   # @param transfer_vol [String/Int] the volume being transferred
@@ -221,14 +218,17 @@ module CollectionTransfer
   def transfer_from_collection_to_items(from_collection:, association_map:,
                                                           transfer_vol: nil,
                                                           instructions: true)
-    associate_wells_to_item(from_collection: from_collection, association_map: association_map,
+    associate_wells_to_item(from_collection: from_collection,
+                            association_map: association_map,
                             transfer_vol: transfer_vol)
-    next unless instructions
+    return unless instructions
 
     collection_to_items_transfer_instructions(from_collection: from_collection,
                                               association_map: association_map,
                                               transfer_vol: transfer_vol)
   end
+
+  #-----------
 
   # Instructions on relabeling plates to new plate ID
   # Tracks provenance properly though transfer
@@ -238,10 +238,12 @@ module CollectionTransfer
   def relabel_plate(from_collection, to_collection: nil)
     collection_type = nil
 
-    collection_type = from_collection.object_type.name if to_collection.nil?
-
-    unless from_collection.object_type == to_collection.object_type
-      ProtocolError 'Object Types do not match'
+    if to_collection.nil?
+      collection_type = from_collection.object_type.name 
+    else
+      unless from_collection.dimensions == to_collection.dimensions
+        ProtocolError 'Object demensions do not match'
+      end
     end
 
     relabeled_collection = transfer_from_collection_to_collection(from_collection,
@@ -249,15 +251,14 @@ module CollectionTransfer
                                                 collection_type: collection_type,
                                                 instructions: false,
                                                 one_to_one: true,
-                                                add_column_wise: false).first
+                                                column_wise: false).first
     show do
       title 'Rename Plate'
       note "Relabel plate <b>#{from_collection.id}</b> with
                         <b>#{relabeled_collection.id}</b>"
     end
-    to_collection
+    relabeled_collection
   end
-
 
   # To offload work from transfer_from_collection_to_collection
   # Handles large if else cases and returns collections and association maps
@@ -284,23 +285,20 @@ module CollectionTransfer
 
 
       if populate_collection || to_collection.nil?
-        # TODO this may not work as expected....  need to think about this
-        array_of_samples = get_samples_from_obj(from_collection.parts)
-
-        collections = make_and_populate_collection(array_of_samples, 
-                                                first_collection: to_collection,
-                                                collection_type: collection_type,
-                                                label_plate: instructions,
-                                                add_column_wise: false)
+        collections = [exact_copy(from_collection, to_collection: to_collection,
+                                                   label_plates: instructions)]
       else
         collections = [to_collection]
       end
-      association_map = make_one_to_many_association_map(
+
+      collections.each do |collection|
+        association_map = make_one_to_many_association_map(
                                                   to_collection: collection,
                                                   from_collection: from_collection,
                                                   samples: nil,
                                                   one_to_one: true)
-      association_maps.push(association_map)
+        association_maps.push(association_map)
+      end
     else
       if array_of_samples.nil?
         array_of_samples = get_samples_from_obj(from_collection.parts)
@@ -337,9 +335,11 @@ module CollectionTransfer
 
   def get_samples_from_obj(array)
     array.map do |part|
-      return part.sample unless part.is_a? Sample
-
-      part
+      if part.is_a? Sample
+        part
+      else
+        part.sample
+      end
     end
     array
   end
@@ -369,7 +369,6 @@ module CollectionTransfer
     collections
   end
 
-
   # Transfer instructions for tech
   #
 
@@ -385,9 +384,8 @@ module CollectionTransfer
     if transfer_vol.nil?
       amount_to_transfer = 'everything'
     else
-        amount_to_transfer = {transfer_vol}.to_s
+      amount_to_transfer = transfer_vol.to_s
     end
-
 
     if association_map.nil?
       association_map = one_to_one_association_map(to_collection: to_collection,
@@ -423,9 +421,9 @@ module CollectionTransfer
     # (Verified)
     # Instructions to transfer items to wells of a collection
     #
-    # @param to_collection [Collection] the plate that is getting the association
+    # @param to_collection [Collection] plate that is getting the association
     # @param from_item [item] the item that is transferring the association
-    # @param Association_map [Array<{to_loc: loc, from_loc: item}>] 
+    # @param Association_map [Array<{to_loc: loc, from_loc: item}>]
     #     Association map of where items are coming from.
     #     If nil will assume transferred to all wells.
     # @param transfer_vol [Integer] the volume transferred if applicable default
@@ -443,7 +441,6 @@ module CollectionTransfer
         to_location = map[:to_loc]
         convert_location_to_coordinates(to_location) if to_location.is_a? String
 
-
         from_item = map[:from_loc]
         from_item = Item.find(from_item) unless from_item.is_a? Item
         list_of_items.push(from_item)
@@ -456,7 +453,6 @@ module CollectionTransfer
         note 'Please get the following items'
         table create_location_table(list_of_items)
       end
-
 
       show do
         title 'Transfer from items to the plate'
@@ -472,9 +468,9 @@ module CollectionTransfer
     # Verified
     # Instructions to transfer from wells in a collection to items
     #
-    # @param to_collection [Collection] the plate that is getting the association
+    # @param to_collection [Collection] the plate that is getting association
     # @param from_item [item] the item that is transferring the association
-    # @param Association_map [Array<{to_loc: loc, from_loc: item}>] 
+    # @param Association_map [Array<{to_loc: loc, from_loc: item}>]
     #     If nil will assume transferred to all wells.
     # @param transfer_vol [Integer] the volume transferred if applicable default
     #   nil if nil then will state unknown transfer vol
@@ -503,13 +499,11 @@ module CollectionTransfer
         rcx_list.push([from_location[0], from_location[1], to_item.id])
       end
 
-
       show do
-        title "Get items for transfer"
+        title 'Get items for transfer'
         note 'Please get the following items'
         table create_location_table(list_of_items)
       end
-
 
       show do
         title 'Transfer from one plate to another'
@@ -547,12 +541,11 @@ module CollectionTransfer
       association_map
     end
 
-
     # Tracks provenance and adds transfer vol association
     # for item to well transfers
     #
     #
-    # @param to_collection [Collection] the plate that is getting the association
+    # @param to_collection [Collection] the plate that is getting association
     # @param from_item [item] the item that is transferring the association
     # @param Association_map [Array<{to_loc: loc, from_loc: item},...>]
     #     If nil will assume transferred to all wells.
@@ -583,7 +576,7 @@ module CollectionTransfer
     #
     # @param from_collection [Collection] the is transferring the association
     # @param to_item [item] the item that is getting_the association
-    # @param Association_map [Array<Hash{to_loc: item, from_loc: [row, col]}, ...] 
+    # @param Association_map [Array<Hash{to_loc: item, from_loc: [row, col]}, ...]
     #      Association map of where items are coming from and going to.
     # @param transfer_vol [String] the volume transferred if applicable
     def associate_wells_to_item(from_collection:, association_map: nil,
