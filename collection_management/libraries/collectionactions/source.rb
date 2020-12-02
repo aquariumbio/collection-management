@@ -6,9 +6,61 @@
 # NOTE: The collection is doing the whole action
 
 needs 'Standard Libs/ItemActions'
+needs 'Collection Management/CollectionTransfer'
+needs 'Collection Management/CollectionDisplay'
 
 module CollectionActions
   include ItemActions
+  include CollectionTransfer
+  include CollectionDisplay
+
+  # Instructs tech to remove supernatant and discard
+  #
+  # @param item [Array<Item>]
+  # @param amap [Hash<from_loc: [r,c]]
+  def remove_discard_supernatant(items, association_map: nil)
+    group = items.group_by(&:collection?)
+    if group[false].present?
+      remove_item_supernatant(group[false])
+    elsif group[true].present?
+      remove_collection_supernatant(group[true], amap: association_map)
+    end
+  end
+
+  # Instructions to remove supernatant from a collection
+  # USE 'remove_discard_supernatant' instead
+  #
+  # @param plates [Array<Collection>]
+  # @param amap [Hash<from_loc: [r,c]]
+  def remove_collection_supernatant(plates, amap: nil)
+    plates.each do |plate|
+      unless amap.present?
+        amap = one_to_one_association_map(from_collection: plate)
+      end
+
+      rc_list = amap.map { |hash| hash[:from_loc] }
+
+      show do
+        title 'Remove Supernatant'
+        note 'Remove and discard supernatant from the following wells:'
+        table highlight_collection_rc(plate, rc_list)
+      end
+    end
+  end
+
+  # Instructions to remove supernatant from an item
+  # Needed to be here to replace the Item Action version
+  #
+  # @param items [Array<item>]
+  def remove_item_supernatant(items)
+    show do
+      title 'Remove Supernatant'
+      note 'Remove and discard supernatant from:'
+      items.each do |item|
+        bullet item.to_s
+      end
+    end
+  end
 
   # Creates new collection.  Instructions to tech optional
   #
@@ -21,6 +73,7 @@ module CollectionActions
     working_plate
   end
 
+  # TODO This is the same as 'copy_wells' in CollectionTransfer
   # Makes an exact copy of the from collection.
   # Will make the to_collection if needed
   #
@@ -33,8 +86,7 @@ module CollectionActions
     if to_collection.nil?
       to_collection = make_new_plate(collection_type, label_plate: label_plates)
     end
-    matrix = from_collection.matrix
-    to_collection.matrix = matrix
+
     to_collection
   end
 
@@ -49,7 +101,6 @@ module CollectionActions
   # @return [Array<Collection>] array of collections created
   def make_and_populate_collection(samples, collection_type: nil,
                                    first_collection: nil,
-                                   add_column_wise: false,
                                    label_plates: false)
 
     if collection_type.nil? && first_collection.nil?
@@ -67,8 +118,7 @@ module CollectionActions
       remaining_space = first_collection.get_empty.length
       add_samples_to_collection(samples[0...remaining_space - 1],
                                 first_collection,
-                                label_plates: label_plates,
-                                add_column_wise: add_column_wise)
+                                label_plates: label_plates)
       samples = samples.drop(remaining_space)
     else
       obj_type = ObjectType.find_by_name(collection_type)
@@ -80,60 +130,42 @@ module CollectionActions
     grouped_samples = samples.in_groups_of(capacity, false)
     grouped_samples.each do |sub_samples|
       collection = make_new_plate(collection_type, label_plate: label_plates)
-      add_samples_to_collection(sub_samples, collection, 
-                                add_column_wise: add_column_wise)
+      add_samples_to_collection(sub_samples, collection)
       collections.push(collection)
     end
     collections
   end
 
   # Assigns samples to specific well locations
+  # The order of the samples and the order of the association map should be
+  # the same
   #
   # @param samples [Array<FieldValue>] or [Array<Samples>]
   # @param to_collection [Collection]
-  # @param add_row_wise [Boolean] default false, will add samples by column
+  # @param association_map map of where samples should go
   # @raise if not enough space in collection
-  def add_samples_to_collection(samples, to_collection, add_column_wise: false)
-    samples.map! do |fv|
-      unless fv.is_a?(Sample)
-        fv = fv.sample
-      end
-      fv
+  def add_samples_to_collection(samples, to_collection, association_map: nil)
+    slots_left = to_collection.get_empty.length
+    if samples.length > slots_left
+      raise "Not enough space in in collection #{to_collection}"
     end
 
-    slots_left = to_collection.get_empty.length
-    raise 'Not enough space in in collection' if samples.length > slots_left
-
-    if add_column_wise
-      add_samples_column_wise(samples, to_collection)
-    else
+    unless association_map.present?
       to_collection.add_samples(samples)
+      return to_collection
+    end
+
+    samples.zip(association_map).each do |sample, map|
+      next if sample.nil?
+
+      if map.nil?
+        to_collection.add(sample)
+        next
+      end
+
+      to_collection.set(rc[0], rc[1], sample)
     end
     to_collection
-  end
-
-  # Adds samples to the first slot in the first available column
-  # as opposed to column wise that the base version does.
-  #
-  # @param samples_to_add [Array<Samples>] an array of samples
-  # @param collection [Collection] the collection to include samples
-  def add_samples_column_wise(samples_to_add, collection)
-    col_matrix = collection.matrix
-    columns = col_matrix.first.size
-    rows = col_matrix.size
-    samples_to_add.each do |sample|
-      break_pattern = false
-      columns.times do |col|
-        rows.times do |row|
-          if collection.part(row, col).nil?
-            collection.set(row, col, sample)
-            break_pattern = true
-            break
-          end
-        end
-        break if break_pattern
-      end
-    end
   end
 
   # Instructions on getting and labeling new plate
@@ -145,6 +177,7 @@ module CollectionActions
       note "Get a <b>#{plate.object_type.name}</b> and
            label it ID: <b>#{plate.id}</b>"
     end
+    plate
   end
 
   # Associates field_values to corresponding samples in a collection
@@ -172,14 +205,23 @@ module CollectionActions
   #
   # @param collection [Collection]
   # @param rc_list [Array<[r,c]>] specify certain wells to cover
-  def seal_plate(collection, rc_list: nil)
-    show do
-      title 'Seal Wells'
-      note "Using an area seal carefully seal plate #{collection.id}"
-      unless rc_list.nil?
-        warning 'ONLY seal the highlighted wells'
-        table highlight_collection_rc(collection, rc_list)
+  def seal_plate(collections, rc_list: nil, seal: nil)
+    unless collections.is_a? Array
+      collections = [collections]
+    end
+
+    seal = 'area seal' if seal.nil?
+
+    collections.each do |collection|
+      show do
+        title 'Seal Wells'
+        note "Using a/an <b> #{seal} </b> carefully seal plate #{collection.id}"
+        unless rc_list.nil?
+          warning 'ONLY seal the highlighted wells'
+          table highlight_collection_rc(collection, rc_list)
+        end
       end
     end
   end
+
 end
