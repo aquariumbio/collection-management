@@ -26,7 +26,7 @@ module CollectionTransfer
     association_map = []
     locations = collection.find(item)
     locations.each do |loc|
-      association_map.push( { to_loc: loc } )
+      association_map.push({ to_loc: loc })
     end
     association_map
   end
@@ -35,7 +35,7 @@ module CollectionTransfer
     association_map = []
     locations = collection.find(item)
     locations.each do |loc|
-      association_map.push( { from_loc: loc } )
+      association_map.push({ from_loc: loc })
     end
     association_map
   end
